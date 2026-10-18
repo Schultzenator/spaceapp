@@ -603,8 +603,13 @@ export async function run(argv, {
         { stdin, stdout, stderr }
       );
       if (code === 0) {
+        // The documented engine-migration path (backup, purge, install again
+        // with the other engine, restore) needs a clean slate: a surviving
+        // config.json would make prepareInstallation refuse the new engine.
+        // Backups and secrets are kept for the manual restore.
+        await rm(join(root, "config.json"), { force: true });
         stdout.write("SpaceApp runtime and Docker volumes removed successfully.\n");
-        stdout.write(`Host configuration and backups remain at ${root} for manual review.\n`);
+        stdout.write(`Host configuration was removed; backups and secrets remain at ${root}.\n`);
         stdout.write("The global SpaceApp CLI remains installed.\n");
         stdout.write("To remove only the global CLI, run: npm uninstall -g run-spaceapp\n");
       } else {
@@ -818,6 +823,7 @@ async function installCommand(args, {
         root,
         stateRoot: stagedStateRoot,
         profile,
+        engine,
         platform,
         stdin,
         stdout,
@@ -833,6 +839,7 @@ async function installCommand(args, {
         existingConfig,
         attemptedProfile: profile,
         companionsEnabled,
+        engine,
         platform,
         stdin,
         stdout,
@@ -1648,6 +1655,7 @@ async function reportInstallDiagnostics({
   root,
   stateRoot,
   profile,
+  engine,
   platform,
   stdin,
   stdout,
@@ -1661,6 +1669,7 @@ async function reportInstallDiagnostics({
         execute,
         composeCommand(action, root, {
           profile,
+          engine,
           stateRoot,
           lines: 200
         }),
@@ -1686,6 +1695,7 @@ async function restoreRuntimeAfterFailedInstall({
   existingConfig,
   attemptedProfile,
   companionsEnabled,
+  engine,
   platform,
   stdin,
   stdout,
@@ -1725,7 +1735,7 @@ async function restoreRuntimeAfterFailedInstall({
         profile: existingConfig?.profile ?? attemptedProfile,
         stateRoot: existingConfig ? root : stagedStateRoot,
         companionsEnabled: existingConfig?.companionsEnabled ?? companionsEnabled,
-        engine: configEngine(existingConfig)
+        engine: existingConfig ? configEngine(existingConfig) : engine
       })
     );
     if (stopCode !== 0) {

@@ -68,7 +68,7 @@ Requirements and limits:
 - `--access host-root` is refused on Podman.
 - An existing installation cannot switch engines in place (Docker volumes are
   not visible to Podman). Migrate with `backup`, `uninstall --purge-data`,
-  `install --engine <docker|podman>`, then `restore <archive>`.
+  `install --engine <docker|podman>`, then `restore`.
 - Windows supports Docker only.
 
 `doctor` and `support-bundle` report the engine, its version, rootless or

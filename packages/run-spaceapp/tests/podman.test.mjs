@@ -197,7 +197,7 @@ test("checkPodmanMachineResources reports undersized machines with resize instru
   const undersized = await checkPodmanMachineResources(
     async (spec, io) => {
       if ((spec.args ?? []).includes("machine")) {
-        io.stdout.write(JSON.stringify([{ Running: true, CPUs: 2, Memory: 2048, DiskSize: 10240 }]));
+        io.stdout.write(JSON.stringify([{ State: "running", Resources: { CPUs: 2, Memory: 2048, DiskSize: 10 } }]));
       }
       return 0;
     },
@@ -210,11 +210,12 @@ test("checkPodmanMachineResources reports undersized machines with resize instru
   assert.match(undersized.issues[1], /podman machine set --memory/);
   assert.match(undersized.issues[2], /disk/);
 
-  // Podman >= 5 reports machine memory and disk in bytes; both magnitudes work.
+  // Podman 5+ nests machine sizing under Resources (Memory in MiB, DiskSize in
+  // GiB) and reports the status in State.
   const adequate = await checkPodmanMachineResources(
     async (spec, io) => {
       if ((spec.args ?? []).includes("machine")) {
-        io.stdout.write(JSON.stringify([{ Running: true, CPUs: 8, Memory: 16 * 1024 ** 3, DiskSize: 40 * 1024 ** 3 }]));
+        io.stdout.write(JSON.stringify([{ State: "running", Resources: { CPUs: 8, Memory: 8192, DiskSize: 40 } }]));
       }
       return 0;
     },
@@ -225,7 +226,7 @@ test("checkPodmanMachineResources reports undersized machines with resize instru
 
   const stopped = await checkPodmanMachineResources(async (spec, io) => {
     if ((spec.args ?? []).includes("machine")) {
-      io.stdout.write(JSON.stringify([{ Running: false }]));
+      io.stdout.write(JSON.stringify([{ State: "stopped" }]));
     }
     return 0;
   });

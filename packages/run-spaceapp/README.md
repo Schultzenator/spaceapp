@@ -114,7 +114,7 @@ Behavior:
 - Switching engines on an existing installation is refused (Docker volumes are
   not visible to Podman). The documented migration path is: `backup`,
   `uninstall --purge-data`, `install --engine <docker|podman>`, then
-  `restore <archive>`.
+  `restore`.
 
 ### Telemetry
 

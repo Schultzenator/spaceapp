@@ -1194,8 +1194,8 @@ function formatPodmanBytes(bytes) {
   return Math.round(value * 10) / 10 + " " + units[unit];
 }
 
-// podman machine inspect reports Memory/DiskSize in bytes on recent versions;
-// older releases used MiB, so small magnitudes are normalized to bytes.
+// Legacy top-level machine values keep the byte normalization; the Podman 5+
+// Resources values use the documented MiB and GiB units directly.
 function normalizePodmanBytes(value) {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
@@ -1227,7 +1227,8 @@ export async function checkPodmanMachineResources(execute, requirements = PROFIL
       issues: ["podman machine inspect returned invalid JSON."]
     };
   }
-  if (!machine || machine.Running === false) {
+  const state = typeof machine?.State === "string" ? machine.State.toLowerCase() : null;
+  if (!machine || machine.Running === false || (state !== null && state !== "running")) {
     return {
       ok: false,
       reason: "podman-machine-not-running",
@@ -1235,9 +1236,17 @@ export async function checkPodmanMachineResources(execute, requirements = PROFIL
     };
   }
   const issues = [];
-  const cpus = Number(machine.CPUs ?? 0);
-  const memoryBytes = normalizePodmanBytes(machine.Memory);
-  const diskBytes = normalizePodmanBytes(machine.DiskSize);
+  // Podman 5+ nests the machine sizing under Resources (CPUs; Memory in MiB;
+  // DiskSize in GiB) and reports the status in State. Keep the legacy
+  // top-level fields as a fallback for older output.
+  const resources = machine.Resources ?? {};
+  const cpus = Number(resources.CPUs ?? machine.CPUs ?? 0);
+  const memoryBytes = resources.Memory !== undefined
+    ? Number(resources.Memory) * 1024 ** 2
+    : normalizePodmanBytes(machine.Memory);
+  const diskBytes = resources.DiskSize !== undefined
+    ? Number(resources.DiskSize) * 1024 ** 3
+    : normalizePodmanBytes(machine.DiskSize);
   if (requirements.cpuCount && cpus > 0 && cpus < requirements.cpuCount) {
     issues.push(
       "podman machine CPU cores: " + cpus + " (profile needs " + requirements.cpuCount + ")." +
