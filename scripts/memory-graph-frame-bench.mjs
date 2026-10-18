@@ -64,18 +64,27 @@ function cdpConnect(wsUrl) {
         for (const listener of listeners) listener(message);
       }
     };
+    const failPending = (error) => {
+      for (const entry of pending.values()) entry.reject(error);
+      pending.clear();
+    };
     socket.onopen = () => resolve({
-      send(method, params = {}) {
+      send(method, params = {}, timeoutMs = 30000) {
         return new Promise((ok, fail) => {
           const id = nextId++;
-          pending.set(id, { resolve: ok, reject: fail });
+          const timer = setTimeout(() => { pending.delete(id); fail(new Error(`CDP command ${method} timed out after ${timeoutMs}ms`)); }, timeoutMs);
+          pending.set(id, { resolve: (value) => { clearTimeout(timer); ok(value); }, reject: (error) => { clearTimeout(timer); fail(error); } });
           socket.send(JSON.stringify({ id, method, params }));
         });
       },
-      onEvent(listener) { listeners.push(listener); },
+      onEvent(listener) {
+        listeners.push(listener);
+        return () => { const at = listeners.indexOf(listener); if (at >= 0) listeners.splice(at, 1); };
+      },
       close() { socket.close(); },
     });
-    socket.onerror = () => reject(new Error("CDP websocket connection failed"));
+    socket.onerror = () => { failPending(new Error("CDP websocket connection failed")); reject(new Error("CDP websocket connection failed")); };
+    socket.onclose = () => failPending(new Error("CDP websocket closed"));
   });
 }
 
@@ -87,7 +96,19 @@ async function evaluate(cdp, expression) {
 async function runBench(cdp, size, timeoutMs) {
   const url = `http://127.0.0.1:${PORT}/feature.html?feature=memory&graphSize=${size}&bench=1&benchFrames=${BENCH_FRAMES}`;
   console.error(`[bench] graphSize=${size} navigating ...`);
-  await cdp.send("Page.navigate", { url });
+  // Page.navigate resolves when the navigation starts, not when the new document is
+  // ready; without waiting, the title poll can read the previous run's BENCH: title
+  // and attribute its timings to this size. Wait for the main frame to commit and load.
+  await new Promise((resolve, reject) => {
+    let committed = false;
+    let off = () => {};
+    const timer = setTimeout(() => { off(); reject(new Error(`graphSize=${size}: navigation did not commit within 30s`)); }, 30000);
+    off = cdp.onEvent((message) => {
+      if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) committed = true;
+      if (message.method === "Page.loadEventFired" && committed) { clearTimeout(timer); off(); resolve(); }
+    });
+    cdp.send("Page.navigate", { url }).catch((error) => { clearTimeout(timer); off(); reject(error); });
+  });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const title = await evaluate(cdp, "document.title");
@@ -99,7 +120,11 @@ async function runBench(cdp, size, timeoutMs) {
         cores: navigator.hardwareConcurrency,
         memoryGb: navigator.deviceMemory || null,
       })`);
-      return { size, ...bench, ...JSON.parse(info) };
+      const parsed = JSON.parse(info);
+      // This driver measures the WebGL2 renderer; a Canvas 2D fallback run (WebGL2
+      // unavailable or context lost) must fail loudly, not report fallback timings.
+      if (parsed.renderer === "canvas2d") throw new Error(`graphSize=${size}: WebGL2 unavailable, the page fell back to Canvas 2D; refusing to report fallback timings`);
+      return { size, ...bench, ...parsed };
     }
     await delay(500);
   }

@@ -329,14 +329,21 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     members.get(edge.target)!.add(edge.source);
     if (edge.origin === "EXPLICIT_TAG") explicit.add(edge.target);
   }
+  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, Math.min(120, limit));
   const topics = nodes.filter(node => members.has(node.id)).sort((a, b) =>
     Number(explicit.has(b.id)) - Number(explicit.has(a.id)) ||
     members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
-  ).slice(0, 160);
-  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, 120);
-  const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
+  ).slice(0, Math.min(160, limit));
+  const selected = new Map<string, MemoryGraphNode>();
+  // The limit applies to every reservation, not only the final fill loop: with limit=1
+  // the reserved sources alone must not already exceed the budget.
+  for (const node of [...sources, ...topics]) {
+    if (selected.size >= limit) break;
+    selected.set(node.id, node);
+  }
   // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
   for (const topic of topics) {
+    if (selected.size >= limit) break;
     const first = [...members.get(topic.id)!].sort()[0];
     if (first) selected.set(first, byId.get(first)!);
   }

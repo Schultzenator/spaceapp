@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { ListMemoryQuery, MemoryEntry, MemoryGraphSnapshot } from "@space/contracts";
+import type { ListMemoryQuery, MemoryEntry, MemoryGraphEdge, MemoryGraphNode, MemoryGraphSnapshot } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
+import { selectOverviewNodes } from "../src/memory-graph-routes.js";
 import type { MemoryMutationCoordinator } from "../src/memory-mutation-coordinator.js";
 import type { MemoryConsolidationCoordinator } from "../src/memory-consolidation-coordinator.js";
 
@@ -1612,5 +1613,23 @@ describe("Memory graph API", () => {
       "memory.change_set.reconciled"
     ]));
     await app.close();
+  });
+});
+
+
+describe("overview node selection limit", () => {
+  it("never returns more nodes than the requested limit, even with more sources than the budget", () => {
+    const nodes: MemoryGraphNode[] = [];
+    for (let i = 0; i < 6; i++) nodes.push({ id: `source:${i}`, type: "SOURCE", label: `file-${i}.md`, sourcePath: `/docs/file-${i}.md`, recordId: null });
+    for (let i = 0; i < 12; i++) nodes.push({ id: `memory:${i}`, type: "MEMORY", label: `Memory ${i}`, sourcePath: null, recordId: `memory:${i}` });
+    const edges: MemoryGraphEdge[] = [];
+    for (let i = 0; i < 12; i++) edges.push({ id: `contains:${i}`, source: `source:${i % 6}`, target: `memory:${i}`, type: "CONTAINS" });
+
+    expect(selectOverviewNodes(nodes, edges, 1)).toHaveLength(1);
+    expect(selectOverviewNodes(nodes, edges, 4)).toHaveLength(4);
+    // The full selection still prefers sources and never exceeds the budget.
+    const selected = selectOverviewNodes(nodes, edges, 8);
+    expect(selected).toHaveLength(8);
+    expect(new Set(selected.map(node => node.id)).size).toBe(8);
   });
 });

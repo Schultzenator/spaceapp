@@ -150,18 +150,23 @@ export function selectGraphLabels(options: LabelSelectionOptions): GraphLabel[] 
   if (!showTitles) return [];
   const drawn: GraphLabel[] = [];
   const boxes: Array<{ x: number; y: number; w: number }> = [];
-  // Far nodes first (stable, like the painter-order pass), then the priority flags promote
-  // focus, core and source labels to the front of the candidate list.
-  const order = nodes.map((_, index) => index).sort((a, b) => depth[b]! - depth[a]!);
-  order.sort((a, b) =>
-    Number(b === focusIndex) - Number(a === focusIndex) ||
-    Number(isMemoryCoreLabel(nodes[b]!.label)) - Number(isMemoryCoreLabel(nodes[a]!.label)) ||
-    Number(nodes[b]!.type === "SOURCE") - Number(nodes[a]!.type === "SOURCE")
-  );
+  // The zoom gate runs before any sorting, and each candidate's priority rank is
+  // computed once, so no regex runs inside the comparator and low-zoom frames never
+  // order the nodes they would discard anyway.
+  const order: number[] = [];
+  const rank = new Map<number, number>();
+  for (let i = 0; i < nodes.length; i++) {
+    const source = nodes[i]!.type === "SOURCE";
+    if (!source && i !== focusIndex && zoom < 1.6) continue;
+    order.push(i);
+    rank.set(i, (i === focusIndex ? 4 : 0) | (isMemoryCoreLabel(nodes[i]!.label) ? 2 : 0) | (source ? 1 : 0));
+  }
+  // Priority first (focus, then core, then source), then nearest-first by depth; index
+  // ties break deterministically.
+  order.sort((a, b) => rank.get(b)! - rank.get(a)! || depth[b]! - depth[a]! || a - b);
   let measured = 0;
   for (const index of order) {
     if (measured >= maxCandidates || drawn.length >= maxDrawn) break;
-    if (nodes[index]!.type !== "SOURCE" && index !== focusIndex && zoom < 1.6) continue;
     measured++;
     const label = nodes[index]!.label;
     const text = label.length > 48 ? label.slice(0, 45) + "\u2026" : label;

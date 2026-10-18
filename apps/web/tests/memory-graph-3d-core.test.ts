@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_MEMORY_CAMERA, projectMemoryPoint, type MemoryCamera3D } from "../src/features/memory-workspace/memory-3d.js";
 import { createProjectionBuffers, parseColorHex, pickProjectedNode, projectMemoryPoints, projectionMatchesReference, projectionScale, ProjectedPointIndex, selectFallbackSubgraph, selectGraphLabels } from "../src/features/memory-workspace/memory-graph-3d-core.js";
-import { buildGraphGeometry } from "../src/features/memory-workspace/memory-graph-gl.js";
+import { buildGraphGeometry, writeFocusAttributes } from "../src/features/memory-workspace/memory-graph-gl.js";
 import { createSyntheticMemoryGraph } from "../src/demo/synthetic-memory-graph.js";
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
 
@@ -174,5 +174,29 @@ describe("50k benchmark budgets (issue #62)", () => {
       if (run === 0) { expect(geometry.count).toBe(50000); expect(geometry.edgeCount).toBeGreaterThan(140000); }
     }
     expect(best).toBeLessThan(100);
+  });
+});
+
+
+describe("3D focus attribute update", () => {
+  it("rewrites the focus slices in place, matching a fresh repack while positions stay untouched", () => {
+    const { nodes, edges } = fixture(300);
+    const coordinates = new Map(nodes.map((node, i) => [node.id, { x: (i % 17) * 3 - 24, y: (i % 11) * 5 - 25, z: (i % 7) * 9 - 27 }]));
+    const positions = new Map(nodes.map(node => [node.id, { x: 0, y: 0, color: "#57ccff", hub: false, groupId: "g" }]));
+    const geometry = buildGraphGeometry(nodes, edges, positions, coordinates, null);
+    const positionsBefore = new Float32Array(geometry.positions);
+    const edgePositionsBefore = new Float32Array(geometry.edgePositions);
+    const focusId = nodes[5]!.id;
+    writeFocusAttributes(geometry, nodes, edges, positions, coordinates, focusId);
+    const fresh = buildGraphGeometry(nodes, edges, positions, coordinates, focusId);
+    // In-place rewrite must be byte-identical to a full repack for every focus-dependent slice.
+    expect(Array.from(geometry.colors)).toEqual(Array.from(fresh.colors));
+    expect(Array.from(geometry.sizes)).toEqual(Array.from(fresh.sizes));
+    expect(Array.from(geometry.glows)).toEqual(Array.from(fresh.glows));
+    expect(Array.from(geometry.dims)).toEqual(Array.from(fresh.dims));
+    expect(Array.from(geometry.edgeColors)).toEqual(Array.from(fresh.edgeColors));
+    // Positions and the edge layout are focus-independent and must never be touched.
+    expect(Array.from(geometry.positions)).toEqual(Array.from(positionsBefore));
+    expect(Array.from(geometry.edgePositions)).toEqual(Array.from(edgePositionsBefore));
   });
 });

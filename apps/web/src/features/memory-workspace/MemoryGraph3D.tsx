@@ -4,7 +4,7 @@ import type { MemoryAtlasPosition } from "./memory-atlas.js";
 import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 import { DEFAULT_MEMORY_CAMERA, memory3DVolumeRatio, type MemoryCamera3D, type MemoryPoint3D } from "./memory-3d.js";
 import { createProjectionBuffers, pickProjectedNode, projectMemoryPoints, projectionScale, selectFallbackSubgraph, selectGraphLabels, ProjectedPointIndex, type ProjectionBuffers } from "./memory-graph-3d-core.js";
-import { buildGraphGeometry, MemoryGraphGlRenderer } from "./memory-graph-gl.js";
+import { buildGraphGeometry, MemoryGraphGlRenderer, writeFocusAttributes, type GraphGeometry } from "./memory-graph-gl.js";
 import { parseBenchParams, publishBenchResult, runFrameBench } from "./memory-graph-bench.js";
 
 /** The Canvas 2D fallback keeps the current sample cap; WebGL2 renders the full graph. */
@@ -22,6 +22,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
   const cameraRef = useRef<MemoryCamera3D>({ ...DEFAULT_MEMORY_CAMERA });
   const redrawRef = useRef<() => void>(() => {});
   const dataVersion = useRef(0);
+  const focusVersion = useRef(0);
   const current = useRef({ nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode });
   current.current = { nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode };
   useEffect(() => {
@@ -41,6 +42,10 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
     let projection = createProjectionBuffers(0);
     let projectedCount = 0;
     let geometryVersion = -1;
+    let geometry: GraphGeometry | null = null;
+    let focusDirty = false;
+    let focusApplied = 0;
+    let indexById = new Map<string, number>();
     let projectionDirty = true;
     let lastRebuildAt = 0;
     let renderNodes: MemoryGraphNode[] = [];
@@ -58,8 +63,14 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       schedule();
     };
     startWebGl();
-    canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); contextLost = true; glRenderer?.dispose(); glRenderer = null; fallbackContext = canvas.getContext("2d"); geometryVersion = -1; projectionDirty = true; schedule(); });
-    canvas.addEventListener("webglcontextrestored", () => { contextLost = false; startWebGl(); });
+    // A canvas that already holds a WebGL context cannot return a 2D context (getContext
+    // returns null for a different context type), so after a context loss the fallback
+    // draws on the label canvas, which already has a 2D context, the dpr transform and
+    // the same size.
+    const onContextLost = (event: Event) => { event.preventDefault(); contextLost = true; glRenderer?.dispose(); glRenderer = null; fallbackContext = labelContext; geometryVersion = -1; projectionDirty = true; schedule(); };
+    const onContextRestored = () => { contextLost = false; startWebGl(); };
+    canvas.addEventListener("webglcontextlost", onContextLost);
+    canvas.addEventListener("webglcontextrestored", onContextRestored);
 
     const radiusOf = (i: number) => {
       const node = renderNodes[i]!;
@@ -80,6 +91,8 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         renderNodes = capped.nodes;
         renderEdges = capped.edges;
       }
+      // The fallback edge pass looks both endpoints up per edge per frame; a map keeps that O(1) instead of O(N).
+      indexById = new Map(renderNodes.map((node, index) => [node.id, index]));
       if (packed.positions.length < renderNodes.length * 3) packed.positions = new Float32Array(renderNodes.length * 3);
       packed.positions.fill(0);
       for (let i = 0; i < renderNodes.length; i++) {
@@ -87,13 +100,25 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         packed.positions[i * 3] = point.x; packed.positions[i * 3 + 1] = point.y; packed.positions[i * 3 + 2] = point.z;
       }
       if (projection.x.length < renderNodes.length) projection = createProjectionBuffers(Math.max(64, renderNodes.length));
-      if (glRenderer) glRenderer.setGeometry(buildGraphGeometry(renderNodes, renderEdges, data.positions, data.coordinates, focus));
+      if (glRenderer) { geometry = buildGraphGeometry(renderNodes, renderEdges, data.positions, data.coordinates, focus); glRenderer.setGeometry(geometry); }
+      focusDirty = false;
+      focusApplied = focusVersion.current;
       projectionDirty = true;
     };
     const render = () => {
       frame = 0;
       const data = current.current;
       if (geometryVersion !== dataVersion.current) { geometryVersion = dataVersion.current; rebuild(); }
+      else if (glRenderer && !contextLost && geometry && (focusDirty || focusApplied !== focusVersion.current)) {
+        // A hover or selection change only rewrites the focus attribute slices in the
+        // existing geometry and re-uploads them; no repack, no GPU reallocation.
+        focusDirty = false;
+        focusApplied = focusVersion.current;
+        writeFocusAttributes(geometry, renderNodes, renderEdges, data.positions, data.coordinates, hover ?? data.selectedNodeId);
+        glRenderer.updateFocusAttributes(geometry);
+      } else if (!glRenderer || contextLost) {
+        focusDirty = false;
+      }
       projectedCount = renderNodes.length;
       if (projectionDirty && projectedCount > 0) {
         projectMemoryPoints(packed.positions, projectedCount, cameraRef.current, projectionScale(packed.positions, projectedCount, width, height), width, height, projection);
@@ -126,8 +151,8 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         context.clearRect(0, 0, width, height);
         context.lineWidth = 0.55;
         for (const edge of renderEdges) {
-          const a = renderNodes.findIndex(node => node.id === edge.source), b = renderNodes.findIndex(node => node.id === edge.target);
-          if (a < 0 || b < 0) continue;
+          const a = indexById.get(edge.source), b = indexById.get(edge.target);
+          if (a === undefined || b === undefined) continue;
           const incident = edge.source === focus || edge.target === focus;
           context.strokeStyle = incident ? "#98dafa" : focus ? "#14202b" : edge.type === "DERIVED_FROM" ? "#385068" : "#203343";
           context.lineWidth = incident ? 1.15 : 0.55;
@@ -184,7 +209,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         projectionDirty = true;
       } else {
         const next = hit(p.x, p.y);
-        if (next !== hover) { hover = next; geometryVersion = -1; }
+        if (next !== hover) { hover = next; focusDirty = true; }
         canvas.style.cursor = hover ? "pointer" : "grab";
       }
       schedule();
@@ -235,9 +260,14 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       redrawRef.current = () => {};
       glRenderer?.dispose(); glRenderer = null;
       canvas.removeEventListener("pointerdown", down); canvas.removeEventListener("pointermove", move); canvas.removeEventListener("pointerup", up); canvas.removeEventListener("pointercancel", cancel); canvas.removeEventListener("wheel", wheel); canvas.removeEventListener("keydown", key);
+      canvas.removeEventListener("webglcontextlost", onContextLost); canvas.removeEventListener("webglcontextrestored", onContextRestored);
     };
   }, []);
-  useEffect(() => { dataVersion.current++; redrawRef.current(); }, [nodes, edges, positions, coordinates, showTitles, selectedNodeId]);
+  useEffect(() => { dataVersion.current++; redrawRef.current(); }, [nodes, edges, positions, coordinates]);
+  // Selection changes only affect focus attributes, and titles only affect labels;
+  // neither triggers a geometry repack.
+  useEffect(() => { focusVersion.current++; redrawRef.current(); }, [selectedNodeId]);
+  useEffect(() => { redrawRef.current(); }, [showTitles]);
   return <div className="memory-3d-surface">
     <canvas ref={canvasRef} tabIndex={0} role="application" aria-label="3D memory graph. Drag or use arrow keys to rotate 360 degrees. Scroll or pinch to zoom. Click a node to open." aria-busy={loading} data-titles-visible={showTitles} data-layout-volume={volumeRatio.toFixed(4)} />
     <canvas ref={labelCanvasRef} className="memory-3d-labels" aria-hidden="true" />

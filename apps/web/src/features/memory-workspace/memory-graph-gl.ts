@@ -31,7 +31,7 @@ void main() {
   float sx = uWidth / 2.0 + x * uScale * uZoom * perspective;
   float sy = uHeight / 2.0 - y * uScale * uZoom * perspective;
   gl_Position = vec4(sx / uWidth * 2.0 - 1.0, 1.0 - sy / uHeight * 2.0, clamp(z * uScale / 650.0, -0.95, 0.95), 1.0);
-  gl_PointSize = max(1.0, aSize * perspective * sqrt(uZoom)) * uDpr * (aGlow > 0.5 ? 2.6 : 1.0);
+  gl_PointSize = 2.0 * max(1.0, aSize * perspective * sqrt(uZoom)) * uDpr * (aGlow > 0.5 ? 2.6 : 1.0);
   vColor = aColor;
   vAlpha = aDim > 0.5 ? 0.2 : clamp(perspective, 0.4, 1.0);
   vGlow = aGlow;
@@ -91,59 +91,85 @@ export interface GraphGeometry {
 }
 
 /**
- * Packs nodes, edges, colors and highlight state into typed arrays. Focus changes only
- * rewrite the small per-node attribute slices, never the whole geometry.
+ * Packs nodes, edges, colors and highlight state into typed arrays. Positions and the
+ * edge list depend only on the graph itself; the focus-dependent attribute slices are
+ * written by writeFocusAttributes, so a hover or selection change can rewrite them in
+ * place instead of repacking the whole geometry.
  */
 export function buildGraphGeometry(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], positions: Map<string, MemoryAtlasPosition>, coordinates: Map<string, MemoryPoint3D>, focusId: string | null): GraphGeometry {
   const count = nodes.length;
-  const positionsOut = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 3);
-  const sizes = new Float32Array(count);
-  const glows = new Float32Array(count);
-  const dims = new Float32Array(count);
+  const geometry: GraphGeometry = {
+    count,
+    positions: new Float32Array(count * 3),
+    colors: new Float32Array(count * 3),
+    sizes: new Float32Array(count),
+    glows: new Float32Array(count),
+    dims: new Float32Array(count),
+    edgeCount: 0,
+    edgePositions: new Float32Array(edges.length * 6),
+    edgeColors: new Float32Array(edges.length * 6)
+  };
+  for (let i = 0; i < count; i++) {
+    const point = coordinates.get(nodes[i]!.id);
+    if (point) { geometry.positions[i * 3] = point.x; geometry.positions[i * 3 + 1] = point.y; geometry.positions[i * 3 + 2] = point.z; }
+  }
+  for (const edge of edges) {
+    const a = coordinates.get(edge.source), b = coordinates.get(edge.target);
+    if (!a || !b) continue;
+    const at = geometry.edgeCount * 6;
+    geometry.edgePositions[at] = a.x; geometry.edgePositions[at + 1] = a.y; geometry.edgePositions[at + 2] = a.z;
+    geometry.edgePositions[at + 3] = b.x; geometry.edgePositions[at + 4] = b.y; geometry.edgePositions[at + 5] = b.z;
+    geometry.edgeCount++;
+  }
+  writeFocusAttributes(geometry, nodes, edges, positions, coordinates, focusId);
+  return geometry;
+}
+
+/**
+ * Rewrites only the focus-dependent attribute slices (colors, sizes, glows, dims and
+ * edge colors) in place, keeping positions and the edge layout untouched. This is the
+ * hover-change path: one attribute pass over existing buffers, no reallocations, so a
+ * pointer moving across a 50,000-node graph never triggers a full repack.
+ */
+export function writeFocusAttributes(geometry: GraphGeometry, nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], positions: Map<string, MemoryAtlasPosition>, coordinates: Map<string, MemoryPoint3D>, focusId: string | null): void {
   const neighbors = new Set<string>();
   if (focusId) for (const edge of edges) { if (edge.source === focusId) neighbors.add(edge.target); if (edge.target === focusId) neighbors.add(edge.source); }
   // Only a handful of distinct palette strings exist; parsing them once keeps the
-  // 150k-edge repack comfortably inside the main-thread long-task budget.
+  // attribute pass comfortably inside the main-thread long-task budget.
   const rgbCache = new Map<string, [number, number, number]>();
   const cachedRgb = (hex: string): [number, number, number] => {
     let rgb = rgbCache.get(hex);
     if (!rgb) { rgb = parseColorHex(hex); rgbCache.set(hex, rgb); }
     return rgb;
   };
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]!;
-    const point = coordinates.get(node.id);
-    if (point) { positionsOut[i * 3] = point.x; positionsOut[i * 3 + 1] = point.y; positionsOut[i * 3 + 2] = point.z; }
     const highlighted = node.id === focusId;
     const root = node.type === "SOURCE" && isMemoryCoreLabel(node.label);
     const base = root ? 10 : node.type === "SOURCE" ? 4.6 : 2.1;
-    sizes[i] = base * (highlighted ? 1.5 : 1);
+    geometry.sizes[i] = base * (highlighted ? 1.5 : 1);
     const rgb = cachedRgb(highlighted ? "#ffffff" : positions.get(node.id)?.color ?? "#7395ad");
-    colors[i * 3] = rgb[0]; colors[i * 3 + 1] = rgb[1]; colors[i * 3 + 2] = rgb[2];
-    glows[i] = root || highlighted ? 1 : 0;
-    dims[i] = focusId && !highlighted && !neighbors.has(node.id) ? 1 : 0;
+    geometry.colors[i * 3] = rgb[0]; geometry.colors[i * 3 + 1] = rgb[1]; geometry.colors[i * 3 + 2] = rgb[2];
+    geometry.glows[i] = root || highlighted ? 1 : 0;
+    geometry.dims[i] = focusId && !highlighted && !neighbors.has(node.id) ? 1 : 0;
   }
-  const edgePositions = new Float32Array(edges.length * 6);
-  const edgeColors = new Float32Array(edges.length * 6);
-  let edgeCount = 0;
+  let edgeIndex = 0;
   for (const edge of edges) {
-    const a = coordinates.get(edge.source), b = coordinates.get(edge.target);
-    if (!a || !b) continue;
-    edgePositions[edgeCount * 6] = a.x; edgePositions[edgeCount * 6 + 1] = a.y; edgePositions[edgeCount * 6 + 2] = a.z;
-    edgePositions[edgeCount * 6 + 3] = b.x; edgePositions[edgeCount * 6 + 4] = b.y; edgePositions[edgeCount * 6 + 5] = b.z;
+    if (!coordinates.has(edge.source) || !coordinates.has(edge.target)) continue;
     const incident = edge.source === focusId || edge.target === focusId;
     const rgb = cachedRgb(incident ? "#98dafa" : focusId ? "#14202b" : edge.type === "DERIVED_FROM" ? "#385068" : "#203343");
-    for (let v = 0; v < 2; v++) { edgeColors[edgeCount * 6 + v * 3] = rgb[0]; edgeColors[edgeCount * 6 + v * 3 + 1] = rgb[1]; edgeColors[edgeCount * 6 + v * 3 + 2] = rgb[2]; }
-    edgeCount++;
+    const at = edgeIndex * 6;
+    for (let v = 0; v < 2; v++) { geometry.edgeColors[at + v * 3] = rgb[0]; geometry.edgeColors[at + v * 3 + 1] = rgb[1]; geometry.edgeColors[at + v * 3 + 2] = rgb[2]; }
+    edgeIndex++;
   }
-  return { count, positions: positionsOut, colors, sizes, glows, dims, edgeCount, edgePositions, edgeColors };
 }
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
-  const shader = gl.createShader(type)!;
+  const shader = gl.createShader(type);
+  if (!shader) throw new Error("WebGL createShader returned null");
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? "shader compile failed");
   return shader;
 }
 
@@ -161,16 +187,26 @@ export class MemoryGraphGlRenderer {
   private constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     const link = (vertex: string, fragment: string): WebGLProgram => {
-      const program = gl.createProgram()!;
+      const program = gl.createProgram();
+      if (!program) throw new Error("WebGL createProgram returned null");
       gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertex));
       gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, fragment));
       gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? "program link failed");
       return program;
     };
     this.nodeProgram = link(NODE_VERTEX, NODE_FRAGMENT);
     this.edgeProgram = link(EDGE_VERTEX, EDGE_FRAGMENT);
-    for (const key of ["position", "color", "size", "glow", "dim"] as const) this.nodeBuffers[key] = gl.createBuffer()!;
-    for (const key of ["position", "color"] as const) this.edgeBuffers[key] = gl.createBuffer()!;
+    for (const key of ["position", "color", "size", "glow", "dim"] as const) {
+      const buffer = gl.createBuffer();
+      if (!buffer) throw new Error("WebGL createBuffer returned null");
+      this.nodeBuffers[key] = buffer;
+    }
+    for (const key of ["position", "color"] as const) {
+      const buffer = gl.createBuffer();
+      if (!buffer) throw new Error("WebGL createBuffer returned null");
+      this.edgeBuffers[key] = buffer;
+    }
   }
 
   /** Returns null when WebGL2 is unavailable, so the caller keeps the Canvas 2D fallback. */
@@ -208,6 +244,20 @@ export class MemoryGraphGlRenderer {
     };
     uploadEdge(this.edgeBuffers.position, geometry.edgePositions, 6);
     uploadEdge(this.edgeBuffers.color, geometry.edgeColors, 6);
+  }
+
+  /** Focus-only update: re-uploads the highlight attribute slices and edge colors in place; positions, capacities and edge layout stay untouched. */
+  updateFocusAttributes(geometry: GraphGeometry): void {
+    const gl = this.gl;
+    const upload = (buffer: WebGLBuffer, data: Float32Array) => {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      if (data.length) gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+    };
+    upload(this.nodeBuffers.color, geometry.colors);
+    upload(this.nodeBuffers.size, geometry.sizes);
+    upload(this.nodeBuffers.glow, geometry.glows);
+    upload(this.nodeBuffers.dim, geometry.dims);
+    upload(this.edgeBuffers.color, geometry.edgeColors);
   }
 
   /** One frame: edges below nodes, GPU depth testing, no CPU-side sort. */
