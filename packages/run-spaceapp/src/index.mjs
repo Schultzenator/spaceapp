@@ -653,7 +653,6 @@ export function composeCommand(action, root, options = {}) {
     "-f", join(stateRoot, "compose.yml"),
     "-f", join(stateRoot, "compose.workspaces.yml"),
     "-f", join(stateRoot, "compose.host-access.yml"),
-    ...(engine === "podman" ? ["-f", join(stateRoot, "compose.podman.yml")] : []),
     ...(settings.browserEnabled ? ["--profile", "standard"] : []),
     ...(settings.temporalEnabled ? ["--profile", "workflows"] : []),
     ...(options.companionsEnabled ? ["--profile", "companions"] : [])
@@ -770,19 +769,6 @@ export async function selectLatestBackupId(root) {
   return backupId;
 }
 
-export function renderPodmanComposeOverlay() {
-  return [
-    "services:",
-    "  spaceapp-core:",
-    '    userns_mode: "keep-id:uid=10001,gid=10001"',
-    "  spaceapp-cli:",
-    '    userns_mode: "keep-id:uid=10001,gid=10001"',
-    "  spaceapp-browser:",
-    '    userns_mode: "keep-id:uid=10001,gid=10001"',
-    ""
-  ].join("\n");
-}
-
 export async function writeRuntimeFiles(root, config) {
   validateHome(root);
   validateConfig(config);
@@ -790,11 +776,11 @@ export async function writeRuntimeFiles(root, config) {
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
   await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
-  if (configEngine(config) === "podman") {
-    await atomicWrite(join(root, "compose.podman.yml"), renderPodmanComposeOverlay());
-  } else {
-    await rm(join(root, "compose.podman.yml"), { force: true });
-  }
+  // Rootless Podman runs the published images through its default subordinate
+  // UID/GID mapping; the image entrypoints start as root and drop privileges
+  // themselves, so no user-namespace overlay is written. A keep-id overlay would
+  // run the entrypoints as the mapped user without capabilities and crash them.
+  await rm(join(root, "compose.podman.yml"), { force: true });
 }
 
 export async function prepareInstallation(root, {

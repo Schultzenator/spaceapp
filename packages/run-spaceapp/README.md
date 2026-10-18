@@ -100,10 +100,13 @@ Behavior:
 - `install` without `--engine` keeps using Docker when it works. If Docker is
   unusable and only Podman is present, the wizard offers Podman (or picks it
   with `--non-interactive`) instead of installing Docker.
-- Compose runs through `podman compose` with a generated `compose.podman.yml`
-  overlay that keeps the app user `10001:10001` inside the container, maps it
-  to your host user (`userns: keep-id`), and relabels `workspace add` bind
-  mounts for SELinux-enforcing hosts, so workspaces work unchanged.
+- Compose runs through `podman compose` with the standard `compose.yml`.
+  Rootless Podman runs the published images through its default subordinate
+  UID/GID mapping (the standard mechanism for rootful images run rootless):
+  the image entrypoints start as root and drop privileges to `10001:10001`
+  themselves, so no user-namespace overlay is needed. Bind mounts registered
+  with `workspace add` are relabeled with SELinux `z` on the podman engine,
+  so they work unchanged on SELinux-enforcing hosts.
 - `doctor` reports the engine, its version, rootless or rootful, the cgroup
   version and whether CPU/memory limits are delegated. `support-bundle`
   includes the same facts, without secrets.

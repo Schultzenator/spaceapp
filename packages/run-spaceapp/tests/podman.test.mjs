@@ -12,7 +12,6 @@ import {
   initializeInstallation,
   loadConfig,
   prepareInstallation,
-  renderPodmanComposeOverlay,
   renderWorkspaceCompose,
   validateConfig
 } from "../src/index.mjs";
@@ -234,11 +233,13 @@ test("checkPodmanMachineResources reports undersized machines with resize instru
   assert.equal(stopped.reason, "podman-machine-not-running");
 });
 
-test("composeCommand targets the podman binary and overlay for podman installations", async () => {
+test("composeCommand targets the podman binary for podman installations", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-compose-"));
   const pull = composeCommand("pull", root, { profile: "small", engine: "podman" });
   assert.equal(pull.command, "podman");
-  assert.ok(pull.args.some((argument) => argument.endsWith("compose.podman.yml")));
+  // No user-namespace overlay: rootless Podman uses its default subuid/subgid
+  // mapping and the published images manage their own privileges.
+  assert.equal(pull.args.some((argument) => argument.endsWith("compose.podman.yml")), false);
 
   const dockerPull = composeCommand("pull", root, { profile: "small", engine: "docker" });
   assert.equal(dockerPull.command, "docker");
@@ -289,14 +290,16 @@ test("prepareInstallation refuses engine switches and documents the migration", 
   );
 });
 
-test("a podman installation stores the engine and writes the userns overlay", async () => {
+test("a podman installation stores the engine and writes no overlay file", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-init-"));
   const { config } = await initializeInstallation(root, { version: "0.1.30", profile: "small", engine: "podman" });
   assert.equal(config.engine, "podman");
   assert.equal(JSON.parse(await readFile(join(root, "config.json"), "utf8")).engine, "podman");
-  const overlay = await readFile(join(root, "compose.podman.yml"), "utf8");
-  assert.match(overlay, /userns_mode: "keep-id:uid=10001,gid=10001"/);
-  assert.equal(overlay, renderPodmanComposeOverlay());
+  // Rootless Podman runs the published images through its default subordinate
+  // UID/GID mapping; the entrypoints start as root and drop privileges themselves.
+  // A keep-id overlay would run them as the mapped user without capabilities and
+  // crash the services, so no overlay file must exist.
+  await assert.rejects(() => readFile(join(root, "compose.podman.yml")));
 
   const dockerRoot = await mkdtemp(join(tmpdir(), "spaceapp-docker-init-"));
   await initializeInstallation(dockerRoot, { version: "0.1.30", profile: "small" });
@@ -415,7 +418,7 @@ test("install refuses host-root access with the podman engine before executing a
   assert.equal(calls.length, 0);
 });
 
-test("install --engine podman completes with podman compose commands and the overlay", async () => {
+test("install --engine podman completes with podman compose commands", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-install-"));
   const stdout = capture();
   const calls = [];
@@ -436,13 +439,13 @@ test("install --engine podman completes with podman compose commands and the ove
   assert.equal(JSON.parse(await readFile(join(root, "config.json"), "utf8")).engine, "podman");
   assert.equal(JSON.parse(await readFile(join(root, "config.json"), "utf8")).profile, "small");
   assert.match(stdout.value(), /Engine: podman \(rootless\)/);
-  assert.match(await readFile(join(root, "compose.podman.yml"), "utf8"), /userns_mode/);
+  await assert.rejects(() => readFile(join(root, "compose.podman.yml")));
 
   // The readiness probe "podman compose version" has no -f files; filter to real compose commands.
   const composeCalls = calls.filter((spec) => spec.args?.includes("--project-name"));
   assert.ok(composeCalls.length > 0, "expected compose activity");
   assert.ok(composeCalls.every((spec) => spec.command === "podman"));
-  assert.ok(composeCalls.every((spec) => spec.args.some((argument) => argument.endsWith("compose.podman.yml"))));
+  assert.ok(composeCalls.every((spec) => spec.args.every((argument) => !argument.endsWith("compose.podman.yml"))));
   assert.ok(composeCalls.some((spec) => spec.args.includes("pull")));
   assert.ok(composeCalls.some((spec) => spec.args.includes("up")));
 });
@@ -510,10 +513,9 @@ test("install rejects an unsupported engine in --answers before executing anythi
   assert.equal(calls.length, 0);
 });
 
-test("update on a podman installation keeps podman commands and checkpoints the overlay", async () => {
+test("update on a podman installation keeps podman commands and checkpoints the runtime files", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-update-"));
   await initializeInstallation(root, { version: "0.1.30", profile: "light", engine: "podman" });
-  const overlay = await readFile(join(root, "compose.podman.yml"), "utf8");
   const calls = [];
   let ensureEngine = null;
   const stderr = capture();
@@ -539,12 +541,12 @@ test("update on a podman installation keeps podman commands and checkpoints the 
   assert.equal(ensureEngine, "podman");
   assert.ok(calls.length > 0);
   assert.ok(calls.every((spec) => spec.command === "podman"));
-  assert.ok(calls.some((spec) => spec.args?.some((argument) => argument.endsWith("compose.podman.yml"))));
+  assert.ok(calls.every((spec) => (spec.args ?? []).every((argument) => !argument.endsWith("compose.podman.yml"))));
 
   const checkpoint = (await readdir(join(root, "checkpoints")))
     .find((name) => name.startsWith("spaceapp-checkpoint-"));
   assert.ok(checkpoint, "expected a checkpoint directory");
-  assert.equal(await readFile(join(root, "checkpoints", checkpoint, "compose.podman.yml"), "utf8"), overlay);
+  assert.ok((await readdir(join(root, "checkpoints", checkpoint))).includes("runtime.env"));
   assert.equal((await loadConfig(root)).engine, "podman");
 });
 
@@ -589,7 +591,7 @@ test("factory-reset on a podman installation reinitializes with the same engine"
   });
   assert.equal(code, 0);
   assert.equal(JSON.parse(await readFile(join(root, "config.json"), "utf8")).engine, "podman");
-  assert.match(await readFile(join(root, "compose.podman.yml"), "utf8"), /userns_mode/);
+  await assert.rejects(() => readFile(join(root, "compose.podman.yml")));
 });
 
 

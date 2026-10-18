@@ -108,6 +108,16 @@ jobs:
           --engine podman --profile small --access isolated --no-open
           --non-interactive --answers '{"confirm":true,"profile":"small","access":"isolated","companions":false,"telemetry":false,"open":false}'
 
+      - name: Dump the podman state if a lifecycle step fails
+        if: failure()
+        run: |
+          podman ps -a || true
+          podman volume ls || true
+          for container in $(podman ps -a --format '{{.Names}}'); do
+            echo "=== logs of $container ==="
+            podman logs --tail 80 "$container" || true
+          done
+
       - name: Doctor reports the podman engine facts
         env:
           SPACEAPP_HOME: ${{ runner.temp }}/spaceapp-podman-home

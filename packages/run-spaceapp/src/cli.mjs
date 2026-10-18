@@ -1549,8 +1549,7 @@ async function createCheckpoint(root, config, { stdin, stdout, stderr, execute, 
     "runtime.env",
     "compose.yml",
     "compose.workspaces.yml",
-    "compose.host-access.yml",
-    ...(configEngine(config) === "podman" ? ["compose.podman.yml"] : [])
+    "compose.host-access.yml"
   ];
   for (const fileName of fileNames) {
     await copyFile(join(root, fileName), join(path, fileName));
