@@ -11,6 +11,13 @@
  * request.
  */
 
+/** An OTLP span link, e.g. a continue-as-new run linked to the run it continues. */
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -22,6 +29,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** Optional OTLP span links to other traces or runs. */
+  links?: readonly SpanLink[];
 }
 
 export interface SpanExporterStats {
@@ -85,6 +94,17 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links?.length
+            ? {
+                links: span.links.map(link => ({
+                  traceId: link.traceId,
+                  spanId: link.spanId,
+                  ...(link.attributes
+                    ? { attributes: Object.entries(link.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })) }
+                    : {})
+                }))
+              }
+            : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))
