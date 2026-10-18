@@ -4,7 +4,10 @@
 // launches headless Chromium once.
 // Usage: node scripts/container-smoke/browser-smoke.mjs <image>
 // Environment: SMOKE_DATABASE_URL (default spaceapp user on 127.0.0.1:5432),
-// SMOKE_TIMEOUT_MS (default 240000).
+// SMOKE_TIMEOUT_MS (default 240000),
+// SMOKE_SKIP_CHROMIUM_LAUNCH ("true": assert the shipped Chromium binary is
+// present and executable instead of launching it - used for arm64 jobs
+// emulated under QEMU, where Chromium crashes during startup).
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,14 +84,23 @@ async function main() {
       throw new Error(`Browser smoke failed: health response was not ok\n${healthOutput}`);
     }
     // Headless Chromium once: proves the shipped browser binary starts in
-    // this image (same user, same paths the Browser Host uses).
-    const dom = sh(["docker", "exec", containerName,
-      "chromium", "--headless=new", "--no-sandbox", "--disable-gpu",
-      "--disable-dev-shm-usage", "--dump-dom", "about:blank"]);
-    if (!dom.includes("<html")) {
-      throw new Error(`Browser smoke failed: headless Chromium did not render about:blank\n${dom.slice(0, 400)}`);
+    // this image (same user, same paths the Browser Host uses). Under QEMU
+    // user-mode emulation (arm64 job on an amd64 runner) Chromium dies
+    // during startup with SIGTRAP (crashpad prctl fails), which reflects
+    // the emulator, not the image, so SMOKE_SKIP_CHROMIUM_LAUNCH=true only
+    // asserts the binary is present and executable.
+    if (process.env.SMOKE_SKIP_CHROMIUM_LAUNCH === "true") {
+      sh(["docker", "exec", containerName, "test", "-x", "/usr/bin/chromium"]);
+      process.stdout.write("browser smoke: Browser Host healthy; headless Chromium launch skipped under QEMU (binary present and executable at /usr/bin/chromium)\n");
+    } else {
+      const dom = sh(["docker", "exec", containerName,
+        "chromium", "--headless=new", "--no-sandbox", "--disable-gpu",
+        "--disable-dev-shm-usage", "--dump-dom", "about:blank"]);
+      if (!dom.includes("<html")) {
+        throw new Error(`Browser smoke failed: headless Chromium did not render about:blank\n${dom.slice(0, 400)}`);
+      }
+      process.stdout.write("browser smoke: Browser Host healthy and headless Chromium launched\n");
     }
-    process.stdout.write("browser smoke: Browser Host healthy and headless Chromium launched\n");
   } finally {
     try {
       sh(["docker", "rm", "-f", containerName]);

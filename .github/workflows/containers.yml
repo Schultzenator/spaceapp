@@ -100,3 +100,6 @@ jobs:
           "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
         env:
           SMOKE_DATABASE_URL: postgres://spaceapp:spaceapp@127.0.0.1:5432/spaceapp
+          # Chromium cannot start under qemu-user emulation; on an amd64 runner
+          # the arm64 job asserts the binary instead of launching it.
+          SMOKE_SKIP_CHROMIUM_LAUNCH: "${{ matrix.arch == 'arm64' && runner.arch == 'X64' }}"
