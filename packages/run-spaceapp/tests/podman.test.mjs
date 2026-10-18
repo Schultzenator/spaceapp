@@ -247,14 +247,14 @@ test("composeCommand targets the podman binary for podman installations", async 
 
   const backup = composeCommand("backup", root, { profile: "small", engine: "podman" });
   assert.ok(backup.args.includes("--user"));
-  assert.equal(backup.args[backup.args.indexOf("--user") + 1], "10001:10001");
+  assert.equal(backup.args[backup.args.indexOf("--user") + 1], "0:0");
   const dockerBackup = composeCommand("backup", root, { profile: "small" });
   assert.equal(dockerBackup.command, "docker");
   assert.equal(dockerBackup.args[dockerBackup.args.indexOf("--user") + 1], "0:0");
 
   const restore = composeCommand("restore", root, { backupId: "spaceapp-backup-20260118T000000001Z", profile: "small", engine: "podman" });
   assert.equal(restore.command, "podman");
-  assert.equal(restore.args[restore.args.indexOf("--user") + 1], "10001:10001");
+  assert.equal(restore.args[restore.args.indexOf("--user") + 1], "0:0");
 });
 
 test("configEngine defaults to docker and validateConfig accepts only docker and podman", async () => {

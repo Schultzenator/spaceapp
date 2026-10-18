@@ -643,7 +643,15 @@ export function composeCommand(action, root, options = {}) {
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   const engine = options.engine === "podman" ? "podman" : "docker";
-  const appUser = engine === "podman" ? "10001:10001" : "0:0";
+  // Backup and restore write into the host bind mount at ./backups, which the
+  // launcher creates with mode 0700 owned by the host user. Under rootless
+  // Podman the container root maps to the host user, so running them as 0:0
+  // keeps the produced files owned by the host user and writable through the
+  // bind mount. The image app user 10001:10001 maps to a subordinate UID there
+  // and gets EACCES on the same directory; the in-image actions that stay
+  // inside named volumes (provider install, owner token rotation) keep
+  // their own 10001:10001 exec users.
+  const appUser = "0:0";
   const settings = profileRuntimeSettings(profile);
   const base = [
     "compose",
