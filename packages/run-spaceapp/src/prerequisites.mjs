@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -1094,4 +1095,203 @@ function launchDetachedCommand(spec) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+// ---------------------------------------------------------------------------
+// Podman engine support (issue #63): rootless Podman as an alternative engine.
+// Podman >= 5 ships "podman compose" on top of the docker-compose v2 provider,
+// so the launcher reuses the compose workflow with an engine-specific overlay.
+// ---------------------------------------------------------------------------
+
+async function captureEngineOutput(execute, spec) {
+  let output = "";
+  const stdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (output.length < 1024 * 1024) output += chunk.toString();
+      done();
+    }
+  });
+  try {
+    const code = await execute({ ...spec, timeoutMs: 15000 }, { stdout, stderr: null });
+    return code === 0 ? output.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Engines whose CLI and compose provider both work on this machine. Docker is
+// checked first and short-circuits the probe: it is the default engine, so
+// Podman is not probed (and its install help is not needed) when Docker works.
+export async function detectAvailableEngines(execute) {
+  if (await dockerIsReady(execute)) {
+    return ["docker"];
+  }
+  const engines = [];
+  if (await podmanIsReady(execute)) engines.push("podman");
+  return engines;
+}
+
+export function podmanInstallHelp(platform = process.platform) {
+  const docs = "https://podman.io/docs/installation";
+  if (platform === "darwin") {
+    return [
+      "Podman is not ready on this Mac.",
+      "",
+      "Install Podman and start its virtual machine first:",
+      "  brew install podman",
+      "  podman machine init",
+      "  podman machine start",
+      "  podman compose version                # verify the compose provider works",
+      "",
+      "Documentation: " + docs
+    ].join("\n");
+  }
+  if (platform === "win32") {
+    return [
+      "The Podman engine is not supported on Windows by this launcher.",
+      "",
+      "Use the Docker engine instead, or run Podman inside WSL2 manually.",
+      "Documentation: " + docs
+    ].join("\n");
+  }
+  return [
+    "Podman is not ready on this system.",
+    "",
+    "Install Podman (>= 5) with a working compose provider:",
+    "  sudo apt-get install podman            # Debian/Ubuntu",
+    "  sudo dnf install podman                # Fedora/RHEL",
+    "  # The compose provider wraps docker-compose v2; install it from",
+    "  # https://github.com/docker/compose/releases into $PATH, or:",
+    "  pip3 install podman-compose            # alternative provider",
+    "",
+    "Verify with: podman --version && podman compose version",
+    "Documentation: " + docs
+  ].join("\n");
+}
+
+function formatPodmanBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "unknown";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return Math.round(value * 10) / 10 + " " + units[unit];
+}
+
+// podman machine inspect reports Memory/DiskSize in bytes on recent versions;
+// older releases used MiB, so small magnitudes are normalized to bytes.
+function normalizePodmanBytes(value) {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return parsed < 1024 * 1024 ? parsed * 1024 * 1024 : parsed;
+}
+
+// Checks that the local podman machine (macOS) satisfies the profile
+// requirements and reports podman machine set / resize instructions.
+export async function checkPodmanMachineResources(execute, requirements = PROFILE_REQUIREMENTS.small) {
+  const raw = await captureEngineOutput(execute, {
+    command: "podman",
+    args: ["machine", "inspect", "--format", "{{json .}}"]
+  });
+  if (!raw) {
+    return {
+      ok: false,
+      reason: "podman-machine-inspect-failed",
+      issues: ["podman machine inspect did not return usable output. Is the machine running?"]
+    };
+  }
+  let machine;
+  try {
+    const parsed = JSON.parse(raw);
+    machine = Array.isArray(parsed) ? parsed[0] : parsed;
+  } catch {
+    return {
+      ok: false,
+      reason: "podman-machine-inspect-failed",
+      issues: ["podman machine inspect returned invalid JSON."]
+    };
+  }
+  if (!machine || machine.Running === false) {
+    return {
+      ok: false,
+      reason: "podman-machine-not-running",
+      issues: ["The podman machine is not running. Start it with: podman machine start"]
+    };
+  }
+  const issues = [];
+  const cpus = Number(machine.CPUs ?? 0);
+  const memoryBytes = normalizePodmanBytes(machine.Memory);
+  const diskBytes = normalizePodmanBytes(machine.DiskSize);
+  if (requirements.cpuCount && cpus > 0 && cpus < requirements.cpuCount) {
+    issues.push(
+      "podman machine CPU cores: " + cpus + " (profile needs " + requirements.cpuCount + ")." +
+      " Resize with: podman machine set --cpus " + requirements.cpuCount
+    );
+  }
+  if (requirements.memoryBytes && memoryBytes > 0 && memoryBytes < requirements.memoryBytes) {
+    issues.push(
+      "podman machine memory: " + formatPodmanBytes(memoryBytes) + " (profile needs " +
+      formatPodmanBytes(requirements.memoryBytes) + "). Resize with: podman machine set --memory " +
+      Math.ceil(requirements.memoryBytes / (1024 * 1024))
+    );
+  }
+  if (requirements.freshDiskBytes && diskBytes > 0 && diskBytes < requirements.freshDiskBytes) {
+    issues.push(
+      "podman machine disk: " + formatPodmanBytes(diskBytes) + " (profile needs " +
+      formatPodmanBytes(requirements.freshDiskBytes) + "). Resize the machine disk" +
+      " (podman machine set --disk-size, or recreate it with a larger --disk-size)."
+    );
+  }
+  return { ok: issues.length === 0, reason: issues.length === 0 ? "ok" : "podman-machine-undersized", issues };
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  requirements = PROFILE_REQUIREMENTS.small
+} = {}) {
+  if (platform === "win32") {
+    stderr.write("The Podman engine is not supported on Windows. Use --engine docker.\n");
+    return { code: 1 };
+  }
+  if (await podmanIsReady(execute)) {
+    if (platform === "darwin") {
+      const machine = await checkPodmanMachineResources(execute, requirements);
+      if (!machine.ok) {
+        stderr.write(machine.issues.join("\n") + "\n");
+        return { code: 1, machine };
+      }
+      return { code: 0, machine };
+    }
+    return { code: 0 };
+  }
+  stderr.write(podmanInstallHelp(platform) + "\n");
+  return { code: 1 };
+}
+
+// Single entry point used by the CLI: verifies the requested engine and prints
+// engine-specific install guidance when it is not usable yet.
+export async function ensureEngineAvailable(engine, options = {}) {
+  if (engine === "podman") {
+    return ensurePodmanAvailable(options);
+  }
+  return ensureDockerAvailable(options);
 }
