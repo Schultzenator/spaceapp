@@ -20,7 +20,10 @@ import { storageChecks } from "../src/storage.mjs";
 import {
   checkPodmanMachineResources,
   detectAvailableEngines,
+  ensurePodmanApiService,
   ensurePodmanAvailable,
+  podmanApiServiceHelp,
+  podmanApiServiceReady,
   podmanInstallHelp,
   podmanIsReady
 } from "../src/prerequisites.mjs";
@@ -354,6 +357,7 @@ test("doctor reports the podman engine, rootless mode, and cgroup delegation", a
   assert.match(out, /PASS Container engine: podman \(rootless\)/);
   assert.match(out, /PASS Engine rootless: rootless \(no root privileges required\)/);
   assert.match(out, /PASS Engine delegation: cgroup v2\.0\.0 with cpu and memory delegation/);
+  assert.match(out, /PASS Podman API socket: reachable/);
   assert.doesNotMatch(out, /Docker CLI/);
 });
 
@@ -586,4 +590,115 @@ test("factory-reset on a podman installation reinitializes with the same engine"
   assert.equal(code, 0);
   assert.equal(JSON.parse(await readFile(join(root, "config.json"), "utf8")).engine, "podman");
   assert.match(await readFile(join(root, "compose.podman.yml"), "utf8"), /userns_mode/);
+});
+
+
+test("podmanApiServiceReady probes the compose path exactly where compose runs", async () => {
+  const calls = [];
+  const execute = async (spec) => {
+    calls.push(spec);
+    return spec.args.join(" ") === "compose ls" ? 1 : 0;
+  };
+  assert.equal(await podmanApiServiceReady(execute), false);
+  assert.equal(await podmanApiServiceReady(async () => 0), true);
+  assert.deepEqual(calls, [{ command: "podman", args: ["compose", "ls"] }]);
+});
+
+test("ensurePodmanApiService starts a detached podman system service when the socket is missing", async () => {
+  const calls = [];
+  let serviceStarted = false;
+  const execute = async (spec) => {
+    calls.push(spec);
+    const args = spec.args.join(" ");
+    if (args === "system service --time=0") {
+      serviceStarted = true;
+      return 0;
+    }
+    if (args === "compose ls") {
+      return serviceStarted ? 0 : 1;
+    }
+    return 0;
+  };
+  const result = await ensurePodmanApiService(execute, { platform: "linux", sleep: async () => {} });
+  assert.equal(result.ok, true);
+  assert.equal(result.started, true);
+  const service = calls.find((spec) => spec.args.join(" ") === "system service --time=0");
+  assert.ok(service, "expected a detached podman system service start");
+  assert.equal(service.background, true);
+});
+
+test("ensurePodmanApiService explains a missing socket on macOS instead of starting a service", async () => {
+  const calls = [];
+  const execute = async (spec) => {
+    calls.push(spec);
+    return spec.args.join(" ") === "compose ls" ? 1 : 0;
+  };
+  const result = await ensurePodmanApiService(execute, { platform: "darwin" });
+  assert.equal(result.ok, false);
+  assert.match(result.instructions.join("\n"), /podman machine start/);
+  assert.ok(calls.every((spec) => !spec.args.includes("system")));
+});
+
+test("ensurePodmanApiService gives up after the wait and prints manual guidance", async () => {
+  const execute = async (spec) => (spec.args.join(" ") === "system service --time=0" ? 0 : 1);
+  const result = await ensurePodmanApiService(execute, { platform: "linux", waitMs: 5, sleep: async () => {} });
+  assert.equal(result.ok, false);
+  assert.match(result.instructions.join("\n"), /podman system service/);
+});
+
+test("ensurePodmanApiService fails fast when the service cannot start at all", async () => {
+  const result = await ensurePodmanApiService(async () => 1, { platform: "linux" });
+  assert.equal(result.ok, false);
+  assert.match(result.instructions.join("\n"), /podman.socket/);
+});
+
+test("ensurePodmanAvailable fails with socket guidance when the API service cannot come up", async () => {
+  const stderr = capture();
+  const result = await ensurePodmanAvailable({
+    platform: "linux",
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    execute: async () => 0,
+    apiService: async () => ({ ok: false, instructions: podmanApiServiceHelp() })
+  });
+  assert.equal(result.code, 1);
+  assert.match(stderr.value(), /podman.socket/);
+});
+
+test("install starts the rootless podman API service when the socket is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-socket-"));
+  const stdout = capture();
+  const calls = [];
+  const inner = podmanAwareExecute();
+  let serviceStarted = false;
+  const execute = async (spec, io) => {
+    calls.push(spec);
+    const args = spec.args.join(" ");
+    if (args === "system service --time=0") {
+      serviceStarted = true;
+      return 0;
+    }
+    if (args === "compose ls") {
+      return serviceStarted ? 0 : 1;
+    }
+    return inner(spec, io);
+  };
+  const code = await run(["install", "--engine", "podman", "--profile", "small", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: capture().stream,
+    stdin: ttyStdin(...FRESH_APPROVALS),
+    inspectResources: async () => eightGigabyteClassLinuxGuest,
+    request: async (url) => jsonResponse(
+      url.endsWith("/readyz") ? { ok: true } : { setupRequired: false, expiresAt: null }
+    ),
+    sleep: async () => {},
+    execute
+  });
+  assert.equal(code, 0);
+  const service = calls.find((spec) => spec.args.join(" ") === "system service --time=0");
+  assert.ok(service, "expected the launcher to start the podman API service");
+  assert.equal(service.background, true);
+  assert.match(stdout.value(), /Engine: podman \(rootless\)/);
 });

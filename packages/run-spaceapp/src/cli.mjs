@@ -2376,6 +2376,14 @@ async function doctor({
     }
     checks.push({ name: "Engine rootless", ...rootless });
     checks.push({ name: "Engine delegation", ...delegation });
+    const apiCode = await execute({ command: "podman", args: ["compose", "ls"] }, { stdin, stdout: null, stderr: null });
+    checks.push({
+      name: "Podman API socket",
+      ok: apiCode === 0,
+      detail: apiCode === 0
+        ? "reachable (the compose provider can connect)"
+        : "not reachable; the compose provider cannot connect. Start it with: systemctl --user enable --now podman.socket"
+    });
   }
   for (const check of checks) {
     (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
@@ -2529,7 +2537,7 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
     const commandEnv = spec.env === undefined
       ? process.env
       : validateCommandEnvironment(spec.env);
-    const background = spec.command === 'xdg-open' && spec.background === true;
+    const background = spec.background === true && (spec.command === "xdg-open" || spec.command === "podman");
     let launchTimer, commandTimer;
     const child = spawnTrustedCommand(spec, {
       env: commandEnv,

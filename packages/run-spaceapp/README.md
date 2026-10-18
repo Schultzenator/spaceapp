@@ -77,6 +77,10 @@ Requirements:
 - Podman 5 or newer. Compose runs through `podman compose` with the
   **docker-compose v2 provider**; install the `docker-compose` v2 binary on
   `PATH` or register it as a Podman compose provider.
+- The compose provider connects through the Podman API socket. On Linux the
+  launcher starts a rootless `podman system service` when the socket is
+  absent; `systemctl --user enable --now podman.socket` provides it
+  permanently on systemd hosts.
 - Linux: rootless Podman with cgroup v2 and delegated `cpu`, `memory` and
   `pids` controllers (the default on current Fedora, Debian, Ubuntu and
   Arch). If a limit cannot be delegated, `doctor` and the install plan say

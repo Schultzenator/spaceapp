@@ -1173,9 +1173,9 @@ export function podmanInstallHelp(platform = process.platform) {
     "Install Podman (>= 5) with a working compose provider:",
     "  sudo apt-get install podman            # Debian/Ubuntu",
     "  sudo dnf install podman                # Fedora/RHEL",
-    "  # The compose provider wraps docker-compose v2; install it from",
-    "  # https://github.com/docker/compose/releases into $PATH, or:",
-    "  pip3 install podman-compose            # alternative provider",
+    "  # The compose provider is docker-compose v2; install it from",
+    "  # https://github.com/docker/compose/releases into $PATH, or",
+    "  # register it as a Podman compose provider.",
     "",
     "Verify with: podman --version && podman compose version",
     "Documentation: " + docs
@@ -1261,12 +1261,72 @@ export async function checkPodmanMachineResources(execute, requirements = PROFIL
   return { ok: issues.length === 0, reason: issues.length === 0 ? "ok" : "podman-machine-undersized", issues };
 }
 
+// The docker-compose v2 provider talks to Podman through the Docker-compatible
+// API socket. The plain podman CLI does not need it, so a host can report a
+// ready engine while compose cannot connect yet. This probe runs the exact
+// command path a compose command would use.
+export async function podmanApiServiceReady(execute) {
+  return (await execute({ command: "podman", args: ["compose", "ls"] }, { stdout: null, stderr: null })) === 0;
+}
+
+export function podmanApiServiceHelp() {
+  return [
+    "The Podman API socket is not reachable, so the compose provider cannot connect.",
+    "Start it once and retry:",
+    "  systemctl --user enable --now podman.socket   # systemd hosts",
+    "  podman system service --time=0 &               # hosts without systemd"
+  ];
+}
+
+// Ensures the rootless Podman API socket is serving. systemd hosts provide it
+// through the podman.socket user unit; everywhere else the launcher starts a
+// detached podman system service that outlives this invocation, so later
+// compose commands find the same socket.
+export async function ensurePodmanApiService(
+  execute,
+  {
+    platform = process.platform,
+    waitMs = 15000,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  } = {}
+) {
+  if (await podmanApiServiceReady(execute)) {
+    return { ok: true, started: false };
+  }
+  if (platform !== "linux") {
+    return {
+      ok: false,
+      instructions: [
+        "The Podman API socket is not reachable, so the compose provider cannot connect.",
+        "Start (or restart) the podman machine and try again:",
+        "  podman machine start"
+      ]
+    };
+  }
+  const startCode = await execute(
+    { command: "podman", args: ["system", "service", "--time=0"], background: true },
+    { stdout: null, stderr: null }
+  );
+  if (startCode !== 0) {
+    return { ok: false, instructions: podmanApiServiceHelp() };
+  }
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    if (await podmanApiServiceReady(execute)) {
+      return { ok: true, started: true };
+    }
+    await sleep(250);
+  }
+  return { ok: false, instructions: podmanApiServiceHelp() };
+}
+
 export async function ensurePodmanAvailable({
   platform = process.platform,
   stdout = process.stdout,
   stderr = process.stderr,
   execute,
-  requirements = PROFILE_REQUIREMENTS.small
+  requirements = PROFILE_REQUIREMENTS.small,
+  apiService = ensurePodmanApiService
 } = {}) {
   if (platform === "win32") {
     stderr.write("The Podman engine is not supported on Windows. Use --engine docker.\n");
@@ -1279,7 +1339,17 @@ export async function ensurePodmanAvailable({
         stderr.write(machine.issues.join("\n") + "\n");
         return { code: 1, machine };
       }
+      const service = await apiService(execute, { platform });
+      if (!service.ok) {
+        stderr.write(service.instructions.join("\n") + "\n");
+        return { code: 1, machine };
+      }
       return { code: 0, machine };
+    }
+    const service = await apiService(execute, { platform });
+    if (!service.ok) {
+      stderr.write(service.instructions.join("\n") + "\n");
+      return { code: 1, apiService: service };
     }
     return { code: 0 };
   }
