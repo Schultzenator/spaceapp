@@ -5,19 +5,24 @@ import { pathToFileURL } from "node:url";
 const mebibyte = 1024 * 1024;
 
 // #64 split the monolithic image into per-target production dependency
-// closures, so each budget tracks only what its target runs. linux/amd64
-// measured with the per-target images after the trim step: core 252.4 MiB,
-// browser 446.1 MiB, cli 261.4 MiB (docker buildx --load, then
-// scripts/container-image-size-budget.mjs --target <t> --image <ref>).
-// linux/arm64 is measured by the containers.yml matrix on native runners
-// and has tracked amd64 within a few percent for these closures. Each
-// budget keeps room for the arch delta and dependency growth, while
-// staying under the ceilings from the issue: core 850 MiB, browser
-// 1350 MiB, cli 1000 MiB.
+// closures, so each budget tracks only what its target runs. The budgets
+// are UNCOMPRESSED image sizes: what `docker image inspect .Size` reports
+// on the classic overlay2 store used by the containers.yml runners, which
+// is where the budget step runs. Measured by the containers.yml matrix:
+// linux/amd64 core 724.9 MiB, browser 1218.8 MiB, cli 758.2 MiB (the old
+// monolithic image measured core 1045.0 MiB); linux/arm64 tracks amd64
+// within ~25 MiB (browser 1242.9 MiB). Each budget keeps room for the
+// arm64 delta and dependency growth, while staying under the ceilings from
+// the issue: core 850 MiB, browser 1350 MiB, cli 1000 MiB.
+// Caveat: docker hosts running the containerd image store (Docker Desktop;
+// docker 29 with the containerd snapshotter) report the COMPRESSED size in
+// `docker image inspect .Size`, roughly 2.5-3x smaller for these images
+// (core ~252 MiB, browser ~446 MiB, cli ~261 MiB on the wire). The CI
+// matrix numbers are authoritative for these budgets.
 export const containerImageSizeBudgets = Object.freeze({
-  core: 380 * mebibyte,
-  browser: 650 * mebibyte,
-  cli: 420 * mebibyte
+  core: 800 * mebibyte,
+  browser: 1300 * mebibyte,
+  cli: 900 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
