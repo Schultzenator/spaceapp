@@ -434,6 +434,74 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("serves more than the default sample when a larger overview limit is requested", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2500 }, (_, index) => ({
+      id: `memory:limit-${String(index).padStart(4, "0")}`,
+      type: "MEMORY" as const,
+      label: `Limit memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.nodes.push({ id: "source:root", type: "SOURCE", label: "gemini.md", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null });
+    graphSnapshot.edges = [];
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: graphSnapshot.nodes.length, edgeCount: 0 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const sampled = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(sampled.statusCode).toBe(200);
+    expect(sampled.json().data.nodes).toHaveLength(2000);
+    expect(sampled.json().data.truncated).toBe(true);
+
+    const full = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=2501", headers: { cookie } });
+    expect(full.statusCode).toBe(200);
+    const fullData = full.json().data;
+    expect(fullData.nodes).toHaveLength(2501);
+    expect(fullData.totalMatchingNodes).toBe(2501);
+    expect(fullData.truncated).toBe(false);
+    await app.close();
+  });
+
+  it("caps the overview limit at the hard server maximum and rejects anything larger", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2300 }, (_, index) => ({ id: `memory:cap-${index}`, type: "MEMORY" as const, label: `Cap memory ${index}`, sourcePath: null, recordId: null }));
+    graphSnapshot.edges = [];
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const rejected = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(rejected.statusCode).toBe(422);
+    expect(rejected.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+
+    const maximum = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(maximum.statusCode).toBe(200);
+    expect(maximum.json().data.nodes).toHaveLength(2300);
+    expect(maximum.json().data.truncated).toBe(false);
+    await app.close();
+  });
+
+  it("scales the edge budget with the requested overview limit", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    const count = 2300;
+    graphSnapshot.nodes = Array.from({ length: count }, (_, index) => ({ id: `memory:budget-${index}`, type: "MEMORY" as const, label: `Budget memory ${index}`, sourcePath: null, recordId: null }));
+    graphSnapshot.edges = Array.from({ length: count * 3 }, (_, index) => {
+      const source = index % count, target = (source + 1 + (index % 3)) % count;
+      return { id: `edge:budget-${index}`, source: `memory:budget-${source}`, target: `memory:budget-${target}`, type: "SEMANTICALLY_RELATED" as const, origin: "EMBEDDING" as const, confidence: 0.9, evidence: "Synthetic similarity for the edge budget test." };
+    });
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: count, edgeCount: graphSnapshot.edges.length };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const sampled = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(sampled.statusCode).toBe(200);
+    expect(sampled.json().data.edges.length).toBeLessThanOrEqual(6000);
+
+    const full = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(full.statusCode).toBe(200);
+    expect(full.json().data.nodes).toHaveLength(count);
+    // The full request lifts the edge budget to three edges per node, capped at 150,000.
+    expect(full.json().data.edges).toHaveLength(Math.min(150000, count * 3));
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;
