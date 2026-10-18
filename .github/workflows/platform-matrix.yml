@@ -92,7 +92,8 @@ jobs:
           PUBLISHED_TAG=1.1.5
           podman pull "ghcr.io/oll4com/spaceapp-core:$PUBLISHED_TAG"
           podman pull "ghcr.io/oll4com/spaceapp-cli:$PUBLISHED_TAG"
-          podman pull "pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7c183544185b87a662f872cfa47ae3b"
+          PGVECTOR_REF=$(grep -o 'pgvector/pgvector:[^ ]*' packages/run-spaceapp/templates/compose.yml | head -1)
+          podman pull "$PGVECTOR_REF"
           if [ "$RUNTIME_TAG" != "$PUBLISHED_TAG" ]; then
             podman tag "ghcr.io/oll4com/spaceapp-core:$PUBLISHED_TAG" "ghcr.io/oll4com/spaceapp-core:$RUNTIME_TAG"
             podman tag "ghcr.io/oll4com/spaceapp-cli:$PUBLISHED_TAG" "ghcr.io/oll4com/spaceapp-cli:$RUNTIME_TAG"
