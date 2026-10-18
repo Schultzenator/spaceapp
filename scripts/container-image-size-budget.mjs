@@ -6,7 +6,7 @@ const mebibyte = 1024 * 1024;
 
 // #64 split the monolithic image into per-target production dependency
 // closures, so each budget tracks only what its target runs. linux/amd64
-// measured with the per-target images: core 668.3 MiB, browser 1160.1 MiB,
+// measured with the per-target images: core 668.4 MiB, browser 1160.2 MiB,
 // cli 701.6 MiB. linux/arm64 is measured by the containers.yml matrix and
 // has been ~25 MiB larger than amd64 for these closures. Each budget keeps
 // room for that arch delta and for dependency growth, while staying under
