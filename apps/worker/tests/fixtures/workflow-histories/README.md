@@ -22,4 +22,8 @@ Never re-record just to make a failing replay pass - that is exactly the
 class of non-deterministic workflow change this gate exists to catch. If
 a replay fails, fix the workflow code (usually by guarding the change
 with patched()) or record the pre-change history under a new fixture name
-instead of overwriting the old one.
+instead of overwriting the old one. The recording command writes only its
+fixed fixture names. Before re-recording, copy the affected pre-change JSON
+to the new name, then add that name to EXPECTED_FIXTURES in
+tests/temporal-sandbox/replay-gate.test.ts and to the expected list in
+tests/temporal-sandbox/record-histories.test.ts.

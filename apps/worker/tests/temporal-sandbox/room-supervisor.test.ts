@@ -97,9 +97,11 @@ describe("roomAgentSupervisorWorkflow (current patched branch)", () => {
     // Hold the turn activity open until the test releases it. A never-settling
     // activity would orphan a pending record on the test server and stop all
     // further time skipping, so the stub always completes instead.
-    stubs.override("runCodexAppServerTurn", async () => {
+    stubs.override("runCodexAppServerTurn", async (input) => {
       await gate.promise;
-      return turnWorkflowResult();
+      return turnWorkflowResult(input, {
+        roomAgentOutcome: { status: "VERIFIED", executedActionCount: 1, statusReason: "Synthetic room-agent turn verified." }
+      });
     });
 
     const handle = await startSupervisor("sup-test-03", supervisorInput(roomId, { pending: [item] }));

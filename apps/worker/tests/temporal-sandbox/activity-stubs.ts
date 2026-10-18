@@ -58,9 +58,11 @@ export class ActivityStubs {
 
 /** Never resolves; rejects when the enclosing activity is cancelled. */
 export function blockUntilCancelled(): Promise<never> {
-  return new Promise((_resolve, reject) => {
-    Context.current().cancelled.catch((error: unknown) => reject(error));
-  });
+  // Cancellation is delivered through heartbeats on SDK 1.24, so keep
+  // heartbeating while the activity waits for the workflow cancel request.
+  const ctx = Context.current();
+  const timer = setInterval(() => ctx.heartbeat(), 100);
+  return ctx.cancelled.finally(() => clearInterval(timer));
 }
 
 /** A promise that stays pending until open() is called from the test. */
