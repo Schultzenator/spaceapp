@@ -21,18 +21,36 @@ FROM build AS deps-core
 ARG TARGETARCH
 RUN npm ci --no-audit --no-fund --omit=dev -w apps/api -w apps/worker \
     && node scripts/container-image-trim.mjs --target core --arch "${TARGETARCH}" \
+    && find apps packages \
+         -type d \( -name node_modules -o -name dist \) -prune \
+         -o -type d \( -name src -o -name __tests__ \) -prune -exec rm -rf {} + \
+    && find apps packages \
+         -type d \( -name node_modules -o -name dist \) -prune \
+         -o -type f \( -name '*.test.js' -o -name '*.test.mjs' -o -name '*.test-d.ts' \) -exec rm -f {} + \
     && find apps packages -maxdepth 3 -name node_modules -type d -print
 
 FROM build AS deps-browser
 ARG TARGETARCH
 RUN npm ci --no-audit --no-fund --omit=dev -w apps/api \
     && node scripts/container-image-trim.mjs --target browser --arch "${TARGETARCH}" \
+    && find apps packages \
+         -type d \( -name node_modules -o -name dist \) -prune \
+         -o -type d \( -name src -o -name __tests__ \) -prune -exec rm -rf {} + \
+    && find apps packages \
+         -type d \( -name node_modules -o -name dist \) -prune \
+         -o -type f \( -name '*.test.js' -o -name '*.test.mjs' -o -name '*.test-d.ts' \) -exec rm -f {} + \
     && find apps packages -maxdepth 3 -name node_modules -type d -print
 
 FROM build AS deps-cli
 ARG TARGETARCH
 RUN npm ci --no-audit --no-fund --omit=dev -w packages/cli-host \
     && node scripts/container-image-trim.mjs --target cli --arch "${TARGETARCH}" \
+    && find apps packages \
+         -type d \( -name node_modules -o -name dist \) -prune \
+         -o -type d \( -name src -o -name __tests__ \) -prune -exec rm -rf {} + \
+    && find apps packages \
+         -type d \( -name node_modules -o -name dist \) -prune \
+         -o -type f \( -name '*.test.js' -o -name '*.test.mjs' -o -name '*.test-d.ts' \) -exec rm -f {} + \
     && find apps packages -maxdepth 3 -name node_modules -type d -print
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
@@ -91,44 +109,33 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
 # carries the apps/api + apps/worker production closure, the workspace build
 # outputs it runs, the owner/backup scripts and the starter memory.
 FROM runtime-base AS core
+COPY --from=deps-core --chown=spaceapp:spaceapp /app/node_modules ./node_modules
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/apps/api ./apps/api
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/apps/worker ./apps/worker
 COPY --from=deps-core --chown=spaceapp:spaceapp /app/apps/web/dist ./apps/web/dist
 COPY --from=deps-core --chown=spaceapp:spaceapp /app/apps/web/server.mjs ./apps/web/server.mjs
 COPY --from=deps-core --chown=spaceapp:spaceapp /app/apps/web/package.json ./apps/web/package.json
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/browser-host ./packages/browser-host
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/cli-host ./packages/cli-host
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/codex-app-server ./packages/codex-app-server
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/contracts ./packages/contracts
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/db ./packages/db
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/gateway ./packages/gateway
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/memory-graph ./packages/memory-graph
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/opencode-control ./packages/opencode-control
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/runtime ./packages/runtime
 COPY --from=deps-core --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/streaming ./packages/streaming
 COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
@@ -142,7 +149,7 @@ RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp/memory \
       /run/spaceapp-cli
 EXPOSE 4911
-HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \\
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:4911/readyz').then(async r=>{const body=await r.json();if(!r.ok||body.ok !== true)process.exit(1)}).catch(()=>process.exit(1))"]
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
@@ -159,20 +166,16 @@ RUN apt-get update \
       /run/spaceapp-browser
 ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
     SPACE_BROWSER_SESSIONS_CHROME_PATH=/usr/bin/chromium
+COPY --from=deps-browser --chown=spaceapp:spaceapp /app/node_modules ./node_modules
 COPY --from=deps-browser --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/apps/api ./apps/api
 COPY --from=deps-browser --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/browser-host ./packages/browser-host
 COPY --from=deps-browser --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/contracts ./packages/contracts
 COPY --from=deps-browser --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/db ./packages/db
 COPY --from=deps-browser --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/runtime ./packages/runtime
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
@@ -194,8 +197,8 @@ RUN npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
       /workspaces \
       /run/spaceapp-cli \
     && printf '%s\n' "$TARGETARCH" > /usr/local/share/spaceapp-cli-architecture
+COPY --from=deps-cli --chown=spaceapp:spaceapp /app/node_modules ./node_modules
 COPY --from=deps-cli --chown=spaceapp:spaceapp \
-    --exclude=src --exclude=**/__tests__ --exclude=**/*.test.js --exclude=**/*.test.mjs --exclude=**/*.test-d.ts \
     /app/packages/cli-host ./packages/cli-host
 COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 # The application's default room project is /opt/spaceapp. CLI sessions run in /etc, as

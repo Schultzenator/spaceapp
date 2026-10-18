@@ -4,7 +4,7 @@
 // Usage: node scripts/container-smoke/cli-smoke.mjs <image>
 // Environment: SMOKE_TIMEOUT_MS (default 120000).
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,7 +12,9 @@ const containerName = "spaceapp-smoke-cli";
 const socketPath = "/run/space-codex-pane-host/pane-host.sock";
 
 function sh(args, options = {}) {
-  return execFileSync(args[0], args.slice(1), { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", ...options });
+  // "input" only reaches the child when stdin is a pipe: with stdio[0]
+  // forced to "ignore", a piped program (docker exec -i node) reads EOF.
+  return execFileSync(args[0], args.slice(1), { stdio: [options.input ? "pipe" : "ignore", "pipe", "pipe"], encoding: "utf8", ...options });
 }
 
 function sleep(ms) {
@@ -26,6 +28,9 @@ async function main() {
   }
   const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS ?? 120_000);
   const socketDir = mkdtempSync(join(tmpdir(), "spaceapp-smoke-cli-socket-"));
+  // The pane host runs as the image's spaceapp user (uid 10001); a bind-mounted
+  // host directory is owned by whoever runs the smoke, so make it writable.
+  chmodSync(socketDir, 0o777);
   try {
     try {
       sh(["docker", "rm", "-f", containerName]);
@@ -46,7 +51,8 @@ async function main() {
     if (!socketUp) {
       let logs = "";
       try {
-        logs = sh(["docker", "logs", "--tail", "60", containerName]);
+        // Merge stderr: a crashed entrypoint reports on stderr, stdout alone stays empty.
+        logs = sh(["bash", "-c", `docker logs --tail 60 ${containerName} 2>&1`]);
       } catch {}
       throw new Error(`CLI smoke failed: pane host socket did not appear\nContainer logs:\n${logs}`);
     }
@@ -60,7 +66,10 @@ async function main() {
     try {
       sh(["docker", "rm", "-f", containerName]);
     } catch {}
-    rmSync(socketDir, { recursive: true, force: true });
+    // Best effort: the pane host owns the bind-mounted socket directory and may
+    // retighten its permissions, so an unremovable temp directory must not fail
+    // an otherwise passed smoke check.
+    try { rmSync(socketDir, { recursive: true, force: true }); } catch {}
   }
 }
 
