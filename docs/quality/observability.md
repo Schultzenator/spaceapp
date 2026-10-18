@@ -359,6 +359,12 @@ No credential or transcript export was added.
   Hosts still join traces through log lines only.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
+- **Workflow span lifecycle edges (since 2026-10-18).** The workflow span is
+  emitted from inside the run, so a terminated or timed-out run (which resumes
+  no workflow code) exports no workflow span while its already-exported
+  activity spans keep pointing at it, and a retried failed workflow task can
+  re-emit the span with the same deterministic span id. The activity span
+  carries the run's outcome either way.
 - **Worker endpoints are not scraped yet.** Stable's `deploy/space-worker.service`
   enables `127.0.0.1:9469/metrics` (worker activities) and `127.0.0.1:9464`
   (Temporal SDK); on 2026-10-16 both answered on stable (`space_process_*` series,

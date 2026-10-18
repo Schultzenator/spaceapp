@@ -144,13 +144,16 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     if (!inFlight) {
       // Assign inFlight before the drain starts. With an empty queue the
       // drain body below would otherwise finish synchronously and clear
-      // inFlight before this assignment stores the promise, leaving a
+      // inFlight before the assignment stores the promise, leaving a
       // stale resolved promise that blocks every later flush and silently
-      // stops all further exports.
+      // stops all further exports. The local `pending` keeps the returned
+      // promise independent of the mutable inFlight field, so an idle
+      // flush still returns a real Promise rather than null.
       let release: () => void = () => {};
-      inFlight = new Promise<void>((resolve) => {
+      const pending = new Promise<void>((resolve) => {
         release = resolve;
       });
+      inFlight = pending;
       void (async () => {
         try {
           while (queue.length) await flushOnce();
@@ -159,6 +162,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
           release();
         }
       })();
+      return pending;
     }
     return inFlight;
   };

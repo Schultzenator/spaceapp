@@ -35,6 +35,22 @@ describe("OTLP span exporter flush lifecycle", () => {
     await exporter.close();
   });
 
+  it("returns a real thenable promise even when an idle flush clears inFlight synchronously", async () => {
+    const exporter = createOtlpSpanExporter({
+      endpoint: "http://127.0.0.1:4318",
+      serviceName: "space-worker",
+      fetch: async () => ({ ok: true })
+    });
+    const returned = exporter.flush();
+    expect(returned).toBeInstanceOf(Promise);
+    let thenResolved = false;
+    await returned.then(() => {
+      thenResolved = true;
+    });
+    expect(thenResolved).toBe(true);
+    await exporter.close();
+  });
+
   it("drains spans recorded while a flush is already in flight", async () => {
     let releaseFetch: (response: { ok: boolean }) => void = () => {};
     const gate = new Promise<{ ok: boolean }>((resolve) => {

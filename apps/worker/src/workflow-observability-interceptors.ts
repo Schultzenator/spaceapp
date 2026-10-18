@@ -80,8 +80,11 @@ export function interceptors(): WorkflowInterceptors {
           const links: WorkflowSpanLink[] = [];
           let traceId: string;
           let parentSpanId: string | null;
-          if (header && header.kind === "parent") {
-            // Scheduled by an observed parent workflow: nest under its span.
+          if (header && header.kind === "parent" && (!inputTrace || inputTrace.traceId === header.traceId)) {
+            // Scheduled by an observed workflow of the same trace: nest
+            // under its span. When the input carries a different trace (a
+            // turn signalled into a long-running supervisor), the input's
+            // traceparent is the truer origin and wins below.
             traceId = header.traceId;
             parentSpanId = header.spanId;
           } else {

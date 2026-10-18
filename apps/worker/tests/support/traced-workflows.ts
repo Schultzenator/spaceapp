@@ -22,6 +22,8 @@ const { echo } = proxyActivities<{
 
 export interface TracedTurnInput extends EchoInput {
   fail?: boolean;
+  /** A traceparent of a different trace, as a signalled turn carries. */
+  childTraceparent?: string;
 }
 
 export async function tracedRootWorkflow(input: TracedTurnInput): Promise<string> {
@@ -33,6 +35,17 @@ export async function tracedRootWorkflow(input: TracedTurnInput): Promise<string
 export async function tracedChildWorkflow(input: TracedTurnInput): Promise<string> {
   await echo({ value: "child", roomId: input.roomId, traceparent: input.traceparent, prompt: input.prompt });
   return "child-done";
+}
+
+/**
+ * A turn signalled into an observed long-running supervisor: the child run
+ * carries a traceparent of a different (newer) request than this workflow's
+ * own trace, like a Room Agent turn started through a signal.
+ */
+export async function tracedMixedWorkflow(input: TracedTurnInput): Promise<string> {
+  await echo({ value: "mixed", roomId: input.roomId, prompt: input.prompt });
+  await executeChild(tracedChildWorkflow, { args: [{ ...input, traceparent: input.childTraceparent }] });
+  return "mixed-done";
 }
 
 export async function tracedContinueWorkflow(input: TracedTurnInput & { pass: number }): Promise<string> {

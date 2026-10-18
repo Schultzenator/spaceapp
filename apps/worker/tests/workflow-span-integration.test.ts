@@ -171,6 +171,36 @@ describe("worker OTLP span export", () => {
     expect(continued?.links).toEqual(expect.arrayContaining([{ traceId: "dddddddddddddddddddddddddddddddd", spanId: "2222222222222222" }]));
   });
 
+  it("prefers the input traceparent when a signalled turn differs from the scheduling workflow's trace", { timeout: 120_000 }, async () => {
+    const collector = await startCollector();
+    const turnTraceId = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    const turnSpanId = "3333333333333333";
+    await withWorker(collector, async () => {
+      const handle = await env.client.workflow.start("tracedMixedWorkflow", {
+        args: [{
+          roomId: "room:delta04",
+          traceparent: formatTraceparent(apiTraceId, apiSpanId),
+          childTraceparent: formatTraceparent(turnTraceId, turnSpanId),
+          prompt: secretPrompt
+        }],
+        taskQueue,
+        workflowId: "worker-span-mixed-1"
+      });
+      await handle.result();
+    });
+    const spans = collector.spans();
+    const mixed = spans.find((span) => span.name === "workflow tracedMixedWorkflow");
+    expect(mixed).toMatchObject({ traceId: apiTraceId, parentSpanId: apiSpanId });
+    const child = spans.find((span) => span.name === "workflow tracedChildWorkflow");
+    // The signalled turn's own request trace wins over the scheduling
+    // workflow's trace, so the turn stays connected to its API request.
+    expect(child).toMatchObject({ traceId: turnTraceId, parentSpanId: turnSpanId });
+    const childEcho = spans.find((span) => span.name === "activity echo" && span.traceId === turnTraceId);
+    expect(childEcho).toMatchObject({ parentSpanId: child?.spanId });
+    expect(collector.bodies.join("")).not.toContain("sk-live-worker-secret-123");
+    expect(collector.bodies.join("")).not.toContain("PRIVATE PROMPT");
+  });
+
   it("gives worker-internal runs a deterministic trace and emits no spans on replay", { timeout: 120_000 }, async () => {
     const collector = await startCollector();
     const workflowId = "worker-span-replay-1";
