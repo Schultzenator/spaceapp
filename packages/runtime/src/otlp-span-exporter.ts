@@ -142,11 +142,21 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
-      inFlight = (async () => {
+      // Assign inFlight before the drain starts. With an empty queue the
+      // drain body below would otherwise finish synchronously and clear
+      // inFlight before this assignment stores the promise, leaving a
+      // stale resolved promise that blocks every later flush and silently
+      // stops all further exports.
+      let release: () => void = () => {};
+      inFlight = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      void (async () => {
         try {
           while (queue.length) await flushOnce();
         } finally {
           inFlight = null;
+          release();
         }
       })();
     }
