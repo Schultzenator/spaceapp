@@ -76,7 +76,7 @@ jobs:
         run: |
           podman --version
           podman compose version
-          podman info | jq '.host.security'
+          podman info --format '{{json .}}' | jq '.host.security'
 
       - run: npm ci
 
