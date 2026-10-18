@@ -33,9 +33,22 @@ describe("OTLP span links", () => {
     }]);
   });
 
-  it("omits the links field when a span has no links", () => {
-    const request = otlpTraceRequest([span()], "space-worker");
-    expect(request.resourceSpans[0].scopeSpans[0].spans[0]).not.toHaveProperty("links");
+  it("omits the links field when a span has no links or an empty list", () => {
+    const bare = otlpTraceRequest([span()], "space-worker");
+    expect(bare.resourceSpans[0].scopeSpans[0].spans[0]).not.toHaveProperty("links");
+    const empty = otlpTraceRequest([span({ links: [] })], "space-worker");
+    expect(empty.resourceSpans[0].scopeSpans[0].spans[0]).not.toHaveProperty("links");
+  });
+
+  it("exports links without attributes and multiple links from other traces", () => {
+    const otherTrace = "ffffffffffffffffffffffffffffffff";
+    const request = otlpTraceRequest([
+      span({ links: [{ traceId: otherTrace, spanId: "aaaaaaaaaaaaaaaa" }, { traceId, spanId: "bbbbbbbbbbbbbbbb" } ] })
+    ], "space-worker");
+    const links = request.resourceSpans[0].scopeSpans[0].spans[0].links;
+    expect(links).toHaveLength(2);
+    expect(links[0]).toEqual({ traceId: otherTrace, spanId: "aaaaaaaaaaaaaaaa" });
+    expect(links[1]).toEqual({ traceId, spanId: "bbbbbbbbbbbbbbbb" });
   });
 
   it("exports recorded links end to end through the exporter queue", async () => {
